@@ -9,6 +9,19 @@ const { YouTubePlugin } = require('@distube/youtube');
 const fs = require('fs');
 const path = require('path');
 
+// ==========================================
+// 1. KIỂM TRA MÔI TRƯỜNG & DEPENDENCIES
+// ==========================================
+try {
+  const { generateDependencyReport } = require('@discordjs/voice');
+  console.log(generateDependencyReport());
+  require('libsodium-wrappers');
+  console.log('✅ Thư viện mã hóa (libsodium) đã sẵn sàng.');
+} catch (error) {
+  console.error('❌ CẢNH BÁO: Thiếu thư viện voice! Bot sẽ không thể vào kênh thoại.');
+  console.error('👉 Hãy chắc chắn bạn đã chạy: npm install @discordjs/opus libsodium-wrappers @discordjs/voice');
+}
+
 // ================= CONFIG =================
 const TOKEN = process.env.DISCORD_TOKEN || 'YOUR_BOT_TOKEN_HERE';
 // ==========================================
@@ -84,7 +97,6 @@ function buildNowPlayingEmbed(song, queue) {
 
 // ========== SLASH COMMANDS ==========
 const commands = [
-  // === MỚI: /join ===
   new SlashCommandBuilder()
     .setName('join')
     .setDescription('Bot vào kênh thoại của bạn (chưa phát nhạc)'),
@@ -123,38 +135,27 @@ client.once('ready', async () => {
 
 // ========== INTERACTIONS ==========
 client.on('interactionCreate', async (interaction) => {
-  // ---------- Slash ----------
+  // ---------- Slash Commands ----------
   if (interaction.isChatInputCommand()) {
-
-    // === MỚI: /join ===
+    
+    // Lệnh /join
     if (interaction.commandName === 'join') {
       const vc = interaction.member.voice.channel;
-      if (!vc) {
-        return interaction.reply({ content: '❌ Bạn cần vào kênh thoại trước!', ephemeral: true });
-      }
+      if (!vc) return interaction.reply({ content: '❌ Bạn cần vào kênh thoại trước!', ephemeral: true });
 
-      // Kiểm tra quyền của bot trong kênh thoại
       const perms = vc.permissionsFor(interaction.guild.members.me);
       if (!perms.has('Connect') || !perms.has('Speak')) {
-        return interaction.reply({
-          content: '❌ Bot không có quyền **Connect** hoặc **Speak** trong kênh này!',
-          ephemeral: true,
-        });
+        return interaction.reply({ content: '❌ Bot không có quyền **Connect** hoặc **Speak** trong kênh này!', ephemeral: true });
       }
 
       await interaction.deferReply();
       try {
-        // Nếu đã có queue ở kênh khác → di chuyển bot sang kênh mới
-        const existing = distube.getQueue(interaction.guildId);
-        if (existing && existing.voiceChannel?.id !== vc.id) {
-          await distube.voices.get(interaction.guild)?.moveMembers(vc.id)
-            ?? await existing.voiceChannel?.members.forEach(() => {});
-          // fallback: rời rồi join lại
-          try {
-            await distube.voices.get(interaction.guild)?.leave();
-          } catch {}
+        // Xử lý chuyển kênh nếu bot đang ở kênh khác
+        const existingQueue = distube.getQueue(interaction.guildId);
+        if (existingQueue && existingQueue.voiceChannel?.id !== vc.id) {
+          await distube.voices.get(interaction.guild)?.leave(); // Rời kênh cũ
         }
-
+        
         await distube.voices.join(vc);
 
         const embed = new EmbedBuilder()
@@ -166,12 +167,11 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ embeds: [embed] });
       } catch (err) {
         console.error(err);
-        return interaction.editReply({
-          content: `❌ Không thể vào kênh thoại: ${err.message?.slice(0, 500) || 'lỗi không rõ'}`,
-        });
+        return interaction.editReply({ content: `❌ Không thể vào kênh thoại: ${err.message?.slice(0, 500)}` });
       }
     }
 
+    // Lệnh /pm
     if (interaction.commandName === 'pm') {
       const link = interaction.options.getString('link');
       const vc = interaction.member.voice.channel;
@@ -188,15 +188,13 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // Lệnh /vol
     if (interaction.commandName === 'vol') {
       const queue = distube.getQueue(interaction.guildId);
-      if (!queue || !queue.songs[0]) {
-        return interaction.reply({ content: '❌ Không có nhạc đang phát.', ephemeral: true });
-      }
+      if (!queue || !queue.songs[0]) return interaction.reply({ content: '❌ Không có nhạc đang phát.', ephemeral: true });
+      
       const vc = interaction.member.voice.channel;
-      if (!vc || vc.id !== queue.voiceChannel?.id) {
-        return interaction.reply({ content: '❌ Bạn phải ở cùng kênh thoại với bot!', ephemeral: true });
-      }
+      if (!vc || vc.id !== queue.voiceChannel?.id) return interaction.reply({ content: '❌ Bạn phải ở cùng kênh thoại với bot!', ephemeral: true });
 
       const level = interaction.options.getInteger('level');
       try {
@@ -204,61 +202,44 @@ client.on('interactionCreate', async (interaction) => {
         const icon = level === 0 ? '🔇' : level < 50 ? '🔈' : level <= 100 ? '🔉' : '🔊';
         return interaction.reply({ content: `${icon} Đã đặt âm lượng: **${level}%**` });
       } catch (err) {
-        console.error(err);
-        return interaction.reply({
-          content: `❌ Không thể đặt volume >100 trên phiên bản DisTube này.\nChi tiết: ${err.message?.slice(0, 300) || 'lỗi không rõ'}`,
-          ephemeral: true,
-        });
+        return interaction.reply({ content: `❌ Lỗi khi đổi volume: ${err.message}`, ephemeral: true });
       }
     }
 
+    // Lệnh /favorites
     if (interaction.commandName === 'favorites') {
       const list = favorites[interaction.user.id] || [];
-      if (!list.length) {
-        return interaction.reply({ content: '📭 Bạn chưa có bài hát yêu thích nào.', ephemeral: true });
-      }
-      const desc = list
-        .map((s, i) => `**${i + 1}.** [${(s.name || 'Không rõ').slice(0, 80)}](${s.url})`)
-        .join('\n')
-        .slice(0, 4000);
-      const embed = new EmbedBuilder()
-        .setColor(0xFF69B4)
-        .setTitle('❤️ Bài hát yêu thích của bạn')
-        .setDescription(desc);
+      if (!list.length) return interaction.reply({ content: '📭 Bạn chưa có bài hát yêu thích nào.', ephemeral: true });
+
+      const desc = list.map((s, i) => `**${i + 1}.** [${(s.name || 'Không rõ').slice(0, 80)}](${s.url})`).join('\n').slice(0, 4000);
+      const embed = new EmbedBuilder().setColor(0xFF69B4).setTitle('❤️ Bài hát yêu thích của bạn').setDescription(desc);
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
-    return;
   }
 
   // ---------- Buttons ----------
   if (interaction.isButton()) {
     const queue = distube.getQueue(interaction.guildId);
-    if (!queue || !queue.songs[0]) {
-      return interaction.reply({ content: '❌ Không có nhạc đang phát.', ephemeral: true });
-    }
+    if (!queue || !queue.songs[0]) return interaction.reply({ content: '❌ Không có nhạc đang phát.', ephemeral: true });
+    
     const userVc = interaction.member.voice.channel;
-    if (!userVc || userVc.id !== queue.voiceChannel?.id) {
-      return interaction.reply({ content: '❌ Bạn phải ở cùng kênh thoại với bot!', ephemeral: true });
-    }
+    if (!userVc || userVc.id !== queue.voiceChannel?.id) return interaction.reply({ content: '❌ Bạn phải ở cùng kênh thoại với bot!', ephemeral: true });
 
     try {
       if (interaction.customId === 'music_pause') {
-        if (queue.paused) queue.resume();
-        else queue.pause();
+        if (queue.paused) queue.resume(); else queue.pause();
         await interaction.update({ components: [buildPlayerRow(queue.paused)] });
       }
       else if (interaction.customId === 'music_skip') {
         const skipped = await queue.skip().catch(() => null);
-        await interaction.reply({
-          content: skipped ? `⏭️ Đã bỏ qua: **${skipped.name}**` : '⏭️ Đã bỏ qua bài hiện tại.',
-          ephemeral: true,
-        });
+        await interaction.reply({ content: skipped ? `⏭️ Đã bỏ qua: **${skipped.name}**` : '⏭️ Đã bỏ qua.', ephemeral: true });
       }
       else if (interaction.customId === 'music_fav') {
         const song = queue.songs[0];
         if (!favorites[interaction.user.id]) favorites[interaction.user.id] = [];
         const list = favorites[interaction.user.id];
         const idx = list.findIndex(s => s.url === song.url);
+        
         if (idx >= 0) {
           list.splice(idx, 1);
           saveFavorites();
@@ -271,9 +252,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     } catch (err) {
       console.error(err);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: `❌ Lỗi: ${err.message?.slice(0, 500)}`, ephemeral: true }).catch(() => {});
-      }
+      if (!interaction.replied && !interaction.deferred) await interaction.reply({ content: `❌ Lỗi: ${err.message}`, ephemeral: true }).catch(() => {});
     }
   }
 });
